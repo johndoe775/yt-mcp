@@ -18,6 +18,79 @@ const TRANSLATION_CONCURRENCY = 4;
 // Approximate words per translation chunk.
 const CHUNK_SIZE = 500;
 
+// Common aliases for language names and ISO codes accepted by the model.
+const LANGUAGE_ALIASES = {
+  auto: "auto",
+  english: "en",
+  en: "en",
+  hindi: "hi",
+  hi: "hi",
+  spanish: "es",
+  es: "es",
+  french: "fr",
+  fr: "fr",
+  german: "de",
+  de: "de",
+  italian: "it",
+  it: "it",
+  portuguese: "pt",
+  pt: "pt",
+  japanese: "ja",
+  ja: "ja",
+  korean: "ko",
+  ko: "ko",
+  chinese: "zh",
+  zh: "zh",
+  arabic: "ar",
+  ar: "ar",
+  russian: "ru",
+  ru: "ru",
+  turkish: "tr",
+  tr: "tr",
+  dutch: "nl",
+  nl: "nl",
+  polish: "pl",
+  pl: "pl",
+  ukrainian: "uk",
+  uk: "uk",
+  swedish: "sv",
+  sv: "sv",
+  vietnamese: "vi",
+  vi: "vi",
+  thai: "th",
+  th: "th",
+  indonesian: "id",
+  id: "id",
+  hebrew: "he",
+  he: "he",
+  norwegian: "no",
+  no: "no",
+  danish: "da",
+  da: "da",
+  finnish: "fi",
+  fi: "fi",
+  greek: "el",
+  el: "el",
+  czech: "cs",
+  cs: "cs",
+  romanian: "ro",
+  ro: "ro",
+};
+
+function normalizeLanguageCode(language) {
+  if (language == null) {
+    return "auto";
+  }
+
+  const normalized = String(language).trim().toLowerCase();
+
+  if (!normalized) {
+    return "auto";
+  }
+
+  return LANGUAGE_ALIASES[normalized] ?? normalized;
+}
+
 
 /*
  * ============================================================
@@ -95,26 +168,26 @@ function splitIntoChunks(text, chunkSize = CHUNK_SIZE) {
  */
 
 async function translateChunk(env, text, sourceLang = "auto") {
-  /*
-   * M2M100 requires a source language.
-   *
-   * "auto" is not supported by the model.
-   *
-   * For now we use English as the default source.
-   *
-   * If your videos are mainly Hindi, change this to:
-   *
-   * source_lang: "hindi"
-   *
-   * Other supported language codes can also be used.
-   */
+  const sourceLanguage = normalizeLanguageCode(sourceLang);
+  const targetLanguage = "en";
+
+  if (sourceLanguage === "auto") {
+    throw new Error(
+      "A transcript source language is required for translation. " +
+      "Pass a language code or let the transcript metadata detect it."
+    );
+  }
+
+  if (sourceLanguage === targetLanguage) {
+    return text;
+  }
 
   const response = await env.AI.run(
     TRANSLATION_MODEL,
     {
       text,
-      source_lang: sourceLang,
-      target_lang: "english",
+      source_lang: sourceLanguage,
+      target_lang: targetLanguage,
     }
   );
 
@@ -204,9 +277,21 @@ async function translateInParallel(
  * ============================================================
  */
 
-async function getYouTubeTranscript(videoId) {
-  const transcript =
-    await YoutubeTranscript.fetchTranscript(videoId);
+async function getYouTubeTranscript(videoId, preferredSourceLanguage = "auto") {
+  const normalizedPreferredLanguage = normalizeLanguageCode(preferredSourceLanguage);
+
+  const transcript = await YoutubeTranscript.fetchTranscript(
+    videoId,
+    normalizedPreferredLanguage !== "auto"
+      ? { lang: normalizedPreferredLanguage }
+      : undefined
+  );
+
+  const detectedLanguage =
+    transcript.find((segment) => segment.lang)?.lang ??
+    normalizedPreferredLanguage !== "auto"
+      ? normalizedPreferredLanguage
+      : "en";
 
   const text = transcript
     .map((segment) => segment.text)
@@ -228,6 +313,7 @@ async function getYouTubeTranscript(videoId) {
     text,
     paragraphs,
     segments: transcript,
+    detectedLanguage,
   };
 }
 
@@ -263,9 +349,10 @@ function createServer(env) {
       source_language: z
         .string()
         .optional()
-        .default("english")
+        .default("auto")
         .describe(
-          "Source language for translation, e.g. english, hindi, spanish"
+          "Source language for translation, e.g. auto, en, hi, es, fr. " +
+          "Use auto to detect the caption language from the video transcript."
         ),
     },
 
@@ -314,8 +401,15 @@ function createServer(env) {
          */
 
         const result =
-          await getYouTubeTranscript(videoId);
+          await getYouTubeTranscript(
+            videoId,
+            source_language
+          );
 
+        const detectedLanguage =
+          normalizeLanguageCode(
+            result.detectedLanguage || source_language
+          );
 
         /*
          * ----------------------------------------------------
@@ -337,7 +431,7 @@ function createServer(env) {
           await translateInParallel(
             env,
             chunks,
-            source_language
+            detectedLanguage
           );
 
 
@@ -369,8 +463,11 @@ function createServer(env) {
                   original_transcript:
                     result.text,
 
+                  source_language:
+                    detectedLanguage,
+
                   translated_to:
-                    "english",
+                    "en",
 
                   translated_transcript:
                     translatedText,
