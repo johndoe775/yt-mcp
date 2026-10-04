@@ -1,0 +1,6 @@
+name = "youtube-transcript-translator-mobile"
+main = "./worker.js"
+compatibility_date = "2026-10-04"
+
+# The worker expects an `AI` binding in the environment for translation calls.
+# Configure bindings in Cloudflare dashboard or when deploying.
